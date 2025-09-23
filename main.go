@@ -19,9 +19,16 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 
 func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Add("content-Type", "text/plain; charset=utf-8")
+	w.Header().Add("content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
-	body := fmt.Sprintf("Hits: %d\n", cfg.fileserverHits.Load())
+	htmlPage := `<html>
+  <body>
+    <h1>Welcome, Chirpy Admin</h1>
+    <p>Chirpy has been visited %d times!</p>
+  </body>
+</html>
+`
+	body := fmt.Sprintf(htmlPage, cfg.fileserverHits.Load())
 	w.Write([]byte(body))
 }
 
@@ -43,13 +50,13 @@ func main() {
 	cfg := apiConfig{}
 	mux := http.NewServeMux()
 	fileServerHander := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
-	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("/app/", cfg.middlewareMetricsInc(fileServerHander))
 	server := http.Server{
 		Handler: mux,
 		Addr: ":8080",
 	}
-	mux.HandleFunc("GET /metrics", cfg.handleAppHits)
-	mux.HandleFunc("POST /reset", cfg.resetHitCounter)
+	mux.HandleFunc("GET /api/healthz", handleHealthz)
+	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
+	mux.HandleFunc("POST /admin/reset", cfg.resetHitCounter)
 	server.ListenAndServe()
 }
