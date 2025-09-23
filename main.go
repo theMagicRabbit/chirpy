@@ -43,13 +43,13 @@ func main() {
 	cfg := apiConfig{}
 	mux := http.NewServeMux()
 	fileServerHander := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
-	mux.HandleFunc("/healthz", handleHealthz)
+	mux.HandleFunc("GET /healthz", handleHealthz)
 	mux.Handle("/app/", cfg.middlewareMetricsInc(fileServerHander))
 	server := http.Server{
 		Handler: mux,
 		Addr: ":8080",
 	}
-	mux.HandleFunc("/metrics", cfg.handleAppHits)
-	mux.HandleFunc("/reset", cfg.resetHitCounter)
+	mux.HandleFunc("GET /metrics", cfg.handleAppHits)
+	mux.HandleFunc("POST /reset", cfg.resetHitCounter)
 	server.ListenAndServe()
 }
