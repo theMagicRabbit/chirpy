@@ -21,6 +21,7 @@ import (
 type apiConfig struct {
 	FileserverHits atomic.Int32
 	Db *database.Queries
+	Env string
 }
 
 type validateChirpBody struct {
@@ -163,7 +164,16 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	})
 }
 
-func (cfg *apiConfig) resetHitCounter(w http.ResponseWriter, _ *http.Request) {
+func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
+	if cfg.Env != "dev" {
+		w.WriteHeader(403)
+		return
+	}
+	if err := cfg.Db.DeleteAllUsers(context.Background()); err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error deleting users: %s\n", err.Error())
+		return
+	}
 	cfg.FileserverHits.Store(0)
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
@@ -173,6 +183,7 @@ func (cfg *apiConfig) resetHitCounter(w http.ResponseWriter, _ *http.Request) {
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
+	platformEnv := os.Getenv("PLATFORM")
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
 		fmt.Println(err.Error())
@@ -181,6 +192,7 @@ func main() {
 	dbQueries := database.New(db)
 	cfg := apiConfig {
 		Db: dbQueries,
+		Env: platformEnv,
 	}
 	mux := http.NewServeMux()
 	fileServerHander := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
@@ -193,6 +205,6 @@ func main() {
 	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
 	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
-	mux.HandleFunc("POST /admin/reset", cfg.resetHitCounter)
+	mux.HandleFunc("POST /admin/reset", cfg.resetApp)
 	server.ListenAndServe()
 }
