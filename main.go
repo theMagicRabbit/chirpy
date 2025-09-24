@@ -1,16 +1,23 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/theMagicRabbit/chirpy/internal/database"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	Db *database.Queries
 }
 
 type validateChirpBody struct {
@@ -117,7 +124,17 @@ func (cfg *apiConfig) resetHitCounter(w http.ResponseWriter, _ *http.Request) {
 }
 
 func main() {
-	cfg := apiConfig{}
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+	dbQueries := database.New(db)
+	cfg := apiConfig {
+		Db: dbQueries,
+	}
 	mux := http.NewServeMux()
 	fileServerHander := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", cfg.middlewareMetricsInc(fileServerHander))
