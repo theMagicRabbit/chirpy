@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -9,7 +10,9 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 	"github.com/theMagicRabbit/chirpy/internal/database"
@@ -109,6 +112,50 @@ func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte(body))
 }
 
+func (cfg *apiConfig) middlewareNewUser() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type requestBody struct {
+			Email string `json:"email"`
+		}
+		var email requestBody
+		var userBytes []byte
+		bodyDecoder := json.NewDecoder(r.Body)
+		if err := bodyDecoder.Decode(&email); err != nil {
+			w.WriteHeader(400)
+			fmt.Fprintf(w, "Error parsing json: %s\n", err.Error())
+			return
+		}
+		id, err := uuid.NewRandom()
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write(userBytes)
+			return
+		}
+		utcTimestamp := time.Now().UTC()
+		params := database.CreateUserParams {
+			ID: id,
+			Email: email.Email,
+			CreatedAt: utcTimestamp,
+			UpdatedAt: utcTimestamp,
+		}
+		user, err := cfg.Db.CreateUser(context.Background(), params)
+		if err != nil {
+			w.WriteHeader(400)
+			fmt.Fprintf(w, "Unable to create new user: %s\n", err.Error())
+			return
+		}
+		userBytes, err = json.Marshal(&user)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write(userBytes)
+			return
+		}
+		w.WriteHeader(201)
+		w.Write(userBytes)
+	})
+
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.FileserverHits.Add(1)
@@ -144,6 +191,7 @@ func main() {
 	}
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
 	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
+	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
 	mux.HandleFunc("POST /admin/reset", cfg.resetHitCounter)
 	server.ListenAndServe()
