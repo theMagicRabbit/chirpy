@@ -34,6 +34,12 @@ var Profanity = []string{
 	"fornax",
 }
 
+type User struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email string `json:"email"`
+}
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
@@ -139,11 +145,17 @@ func (cfg *apiConfig) middlewareNewUser() http.Handler {
 			CreatedAt: utcTimestamp,
 			UpdatedAt: utcTimestamp,
 		}
-		user, err := cfg.Db.CreateUser(context.Background(), params)
+		databaseUser, err := cfg.Db.CreateUser(context.Background(), params)
 		if err != nil {
 			w.WriteHeader(400)
 			fmt.Fprintf(w, "Unable to create new user: %s\n", err.Error())
 			return
+		}
+		user := User{
+			ID: databaseUser.ID,
+			CreatedAt: databaseUser.CreatedAt,
+			UpdatedAt: databaseUser.UpdatedAt,
+			Email: databaseUser.Email,
 		}
 		userBytes, err = json.Marshal(&user)
 		if err != nil {
