@@ -16,7 +16,7 @@ import (
 )
 
 type apiConfig struct {
-	fileserverHits atomic.Int32
+	FileserverHits atomic.Int32
 	Db *database.Queries
 }
 
@@ -105,19 +105,19 @@ func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
   </body>
 </html>
 `
-	body := fmt.Sprintf(htmlPage, cfg.fileserverHits.Load())
+	body := fmt.Sprintf(htmlPage, cfg.FileserverHits.Load())
 	w.Write([]byte(body))
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Add(1)
+		cfg.FileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
 }
 
 func (cfg *apiConfig) resetHitCounter(w http.ResponseWriter, _ *http.Request) {
-	cfg.fileserverHits.Store(0)
+	cfg.FileserverHits.Store(0)
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK\n"))
