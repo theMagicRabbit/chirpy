@@ -225,7 +225,7 @@ func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
-func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, _ *http.Request) {
 	chirps, err := cfg.Db.GetAllChirps(context.Background())
 	if err != nil {
 		w.WriteHeader(500)
@@ -233,6 +233,31 @@ func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	data, err := json.Marshal(chirps)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
+		return
+	}
+	w.Header().Add("content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+}
+
+func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	idString := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(idString)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "Unable to parse userID: %s\n", err.Error())
+		return
+	}
+	chirp, err := cfg.Db.GetChirpByID(context.Background(), chirpID)
+	if err != nil {
+		w.WriteHeader(404)
+		fmt.Fprintf(w, "Chirp not found in database: %s\n", err.Error())
+		return
+	}
+	data, err := json.Marshal(chirp)
 	if err != nil {
 		w.WriteHeader(500)
 		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
@@ -267,6 +292,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
 	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
 	mux.HandleFunc("GET /api/chirps", cfg.handleGetAllChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleGetChirpByID)
 	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
 	mux.HandleFunc("POST /admin/reset", cfg.resetApp)
