@@ -1,20 +1,27 @@
 package main
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
+	"github.com/theMagicRabbit/chirpy/internal/database"
 )
 
 type apiConfig struct {
-	fileserverHits atomic.Int32
-}
-
-type validateChirpBody struct {
-	Body string `json:"body"`
+	FileserverHits atomic.Int32
+	Db *database.Queries
+	Env string
 }
 
 var Profanity = []string{
@@ -23,6 +30,20 @@ var Profanity = []string{
 	"fornax",
 }
 
+type User struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email string `json:"email"`
+}
+
+type Chirp struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body string `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
+}
 
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
@@ -30,39 +51,68 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
-func handleValidateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	type validateResponse struct {
 		Error string `json:"error"`
 		Valid bool   `json:"valid"`
 		CleanedBody string `json:"cleaned_body"`
 	}
-	
-	var responseCode int
-	responseBody := validateResponse{}
 
-	bodyDecoder := json.NewDecoder(r.Body)
-	chirp := validateChirpBody{}
-	if err := bodyDecoder.Decode(&chirp); err != nil {
-		responseBody.Error = "Something went wrong"
-		responseCode = 400
-	} else {
-		if len(chirp.Body) > 140 {
-			responseBody.Error = "Chirp is too long"
-			responseCode = 400
-		} else {
-			message, _ := profanityChecker(chirp.Body)
-			responseBody.CleanedBody = message
-			responseBody.Valid = true
-			responseCode = 200
-		}
+	type chirpReq struct {
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
-	data, err := json.Marshal(responseBody)
+	
+	bodyDecoder := json.NewDecoder(r.Body)
+	chirp := chirpReq{}
+	if err := bodyDecoder.Decode(&chirp); err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "Unable to decode json string: %s\n", err.Error())
+		return
+	}
+	if len(chirp.Body) > 140 {
+		w.WriteHeader(400)
+		fmt.Fprintln(w, "Chirp is too long")
+		return
+	}
+	if message, wasCleaned := profanityChecker(chirp.Body); wasCleaned {
+		chirp.Body = message
+	}
+	chirpID, err := uuid.NewRandom()
 	if err != nil {
 		w.WriteHeader(500)
+		fmt.Fprintf(w, "Unable to create UUID: %s\n", err.Error())
+		return
+	}
+	utcTimestamp := time.Now().UTC()
+	params := database.CreateChirpParams {
+		ID: chirpID,
+		CreatedAt: utcTimestamp,
+		UpdatedAt: utcTimestamp,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+	dbChirp, err := cfg.Db.CreateChirp(context.Background(), params)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Unable to store chirp: %s\n", err.Error())
+		return
+	}
+	localChirp := Chirp{
+		ID: dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.CreatedAt,
+		Body: dbChirp.Body,
+		UserID: dbChirp.UserID,
+	}
+	data, err := json.Marshal(localChirp)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error unmarshaling chirp: %s\n", err.Error())
 		return
 	}
 	w.Header().Add("content-type", "application/json")
-	w.WriteHeader(responseCode)
+	w.WriteHeader(201)
 	w.Write(data)
 }
 
@@ -98,26 +148,140 @@ func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
   </body>
 </html>
 `
-	body := fmt.Sprintf(htmlPage, cfg.fileserverHits.Load())
+	body := fmt.Sprintf(htmlPage, cfg.FileserverHits.Load())
 	w.Write([]byte(body))
+}
+
+func (cfg *apiConfig) middlewareNewUser() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		type requestBody struct {
+			Email string `json:"email"`
+		}
+		var email requestBody
+		var userBytes []byte
+		bodyDecoder := json.NewDecoder(r.Body)
+		if err := bodyDecoder.Decode(&email); err != nil {
+			w.WriteHeader(400)
+			fmt.Fprintf(w, "Error parsing json: %s\n", err.Error())
+			return
+		}
+		id, err := uuid.NewRandom()
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write(userBytes)
+			return
+		}
+		utcTimestamp := time.Now().UTC()
+		params := database.CreateUserParams {
+			ID: id,
+			Email: email.Email,
+			CreatedAt: utcTimestamp,
+			UpdatedAt: utcTimestamp,
+		}
+		databaseUser, err := cfg.Db.CreateUser(context.Background(), params)
+		if err != nil {
+			w.WriteHeader(400)
+			fmt.Fprintf(w, "Unable to create new user: %s\n", err.Error())
+			return
+		}
+		user := User{
+			ID: databaseUser.ID,
+			CreatedAt: databaseUser.CreatedAt,
+			UpdatedAt: databaseUser.UpdatedAt,
+			Email: databaseUser.Email,
+		}
+		userBytes, err = json.Marshal(&user)
+		if err != nil {
+			w.WriteHeader(500)
+			w.Write(userBytes)
+			return
+		}
+		w.WriteHeader(201)
+		w.Write(userBytes)
+	})
+
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cfg.fileserverHits.Add(1)
+		cfg.FileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (cfg *apiConfig) resetHitCounter(w http.ResponseWriter, _ *http.Request) {
-	cfg.fileserverHits.Store(0)
+func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
+	if cfg.Env != "dev" {
+		w.WriteHeader(403)
+		return
+	}
+	if err := cfg.Db.DeleteAllUsers(context.Background()); err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error deleting users: %s\n", err.Error())
+		return
+	}
+	cfg.FileserverHits.Store(0)
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK\n"))
 }
 
+func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, _ *http.Request) {
+	chirps, err := cfg.Db.GetAllChirps(context.Background())
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error getting data from db: %s\n", err.Error())
+		return
+	}
+	data, err := json.Marshal(chirps)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
+		return
+	}
+	w.Header().Add("content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+}
+
+func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
+	idString := r.PathValue("chirpID")
+	chirpID, err := uuid.Parse(idString)
+	if err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "Unable to parse userID: %s\n", err.Error())
+		return
+	}
+	chirp, err := cfg.Db.GetChirpByID(context.Background(), chirpID)
+	if err != nil {
+		w.WriteHeader(404)
+		fmt.Fprintf(w, "Chirp not found in database: %s\n", err.Error())
+		return
+	}
+	data, err := json.Marshal(chirp)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
+		return
+	}
+	w.Header().Add("content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+}
+
 func main() {
-	cfg := apiConfig{}
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+	platformEnv := os.Getenv("PLATFORM")
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Println(err.Error())
+		os.Exit(1)
+	}
+	dbQueries := database.New(db)
+	cfg := apiConfig {
+		Db: dbQueries,
+		Env: platformEnv,
+	}
 	mux := http.NewServeMux()
 	fileServerHander := http.StripPrefix("/app", http.FileServer(http.Dir(".")))
 	mux.Handle("/app/", cfg.middlewareMetricsInc(fileServerHander))
@@ -126,8 +290,11 @@ func main() {
 		Addr: ":8080",
 	}
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
-	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
+	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.handleGetAllChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleGetChirpByID)
+	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
-	mux.HandleFunc("POST /admin/reset", cfg.resetHitCounter)
+	mux.HandleFunc("POST /admin/reset", cfg.resetApp)
 	server.ListenAndServe()
 }
