@@ -24,10 +24,6 @@ type apiConfig struct {
 	Env string
 }
 
-type validateChirpBody struct {
-	Body string `json:"body"`
-}
-
 var Profanity = []string{
 	"kerfuffle",
 	"sharbert",
@@ -41,45 +37,82 @@ type User struct {
 	Email string `json:"email"`
 }
 
+type Chirp struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body string `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
+}
+
 func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Add("content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(200)
 	w.Write([]byte("OK\n"))
 }
 
-func handleValidateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	type validateResponse struct {
 		Error string `json:"error"`
 		Valid bool   `json:"valid"`
 		CleanedBody string `json:"cleaned_body"`
 	}
-	
-	var responseCode int
-	responseBody := validateResponse{}
 
-	bodyDecoder := json.NewDecoder(r.Body)
-	chirp := validateChirpBody{}
-	if err := bodyDecoder.Decode(&chirp); err != nil {
-		responseBody.Error = "Something went wrong"
-		responseCode = 400
-	} else {
-		if len(chirp.Body) > 140 {
-			responseBody.Error = "Chirp is too long"
-			responseCode = 400
-		} else {
-			message, _ := profanityChecker(chirp.Body)
-			responseBody.CleanedBody = message
-			responseBody.Valid = true
-			responseCode = 200
-		}
+	type chirpReq struct {
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
-	data, err := json.Marshal(responseBody)
+	
+	bodyDecoder := json.NewDecoder(r.Body)
+	chirp := chirpReq{}
+	if err := bodyDecoder.Decode(&chirp); err != nil {
+		w.WriteHeader(400)
+		fmt.Fprintf(w, "Unable to decode json string: %s\n", err.Error())
+		return
+	}
+	if len(chirp.Body) > 140 {
+		w.WriteHeader(400)
+		fmt.Fprintln(w, "Chirp is too long")
+		return
+	}
+	if message, wasCleaned := profanityChecker(chirp.Body); wasCleaned {
+		chirp.Body = message
+	}
+	chirpID, err := uuid.NewRandom()
 	if err != nil {
 		w.WriteHeader(500)
+		fmt.Fprintf(w, "Unable to create UUID: %d\n", err.Error())
+		return
+	}
+	utcTimestamp := time.Now().UTC()
+	params := database.CreateChirpParams {
+		ID: chirpID,
+		CreatedAt: utcTimestamp,
+		UpdatedAt: utcTimestamp,
+		Body: chirp.Body,
+		UserID: chirp.UserID,
+	}
+	dbChirp, err := cfg.Db.CreateChirp(context.Background(), params)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Unable to store chirp: %d\n", err.Error())
+		return
+	}
+	localChirp := Chirp{
+		ID: dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.CreatedAt,
+		Body: dbChirp.Body,
+		UserID: dbChirp.UserID,
+	}
+	data, err := json.Marshal(localChirp)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error unmarshaling chirp: %d\n", err.Error())
 		return
 	}
 	w.Header().Add("content-type", "application/json")
-	w.WriteHeader(responseCode)
+	w.WriteHeader(201)
 	w.Write(data)
 }
 
@@ -214,7 +247,7 @@ func main() {
 		Addr: ":8080",
 	}
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
-	mux.HandleFunc("POST /api/validate_chirp", handleValidateChirp)
+	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
 	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
 	mux.HandleFunc("POST /admin/reset", cfg.resetApp)
