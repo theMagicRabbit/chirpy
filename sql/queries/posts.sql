@@ -8,3 +8,7 @@ INSERT INTO chirps (
 ) VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
+-- name: GetAllChirps :many
+SELECT * FROM chirps
+ORDER BY created_at ASC;
+

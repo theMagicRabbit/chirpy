@@ -81,7 +81,7 @@ func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	chirpID, err := uuid.NewRandom()
 	if err != nil {
 		w.WriteHeader(500)
-		fmt.Fprintf(w, "Unable to create UUID: %d\n", err.Error())
+		fmt.Fprintf(w, "Unable to create UUID: %s\n", err.Error())
 		return
 	}
 	utcTimestamp := time.Now().UTC()
@@ -95,7 +95,7 @@ func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	dbChirp, err := cfg.Db.CreateChirp(context.Background(), params)
 	if err != nil {
 		w.WriteHeader(500)
-		fmt.Fprintf(w, "Unable to store chirp: %d\n", err.Error())
+		fmt.Fprintf(w, "Unable to store chirp: %s\n", err.Error())
 		return
 	}
 	localChirp := Chirp{
@@ -108,7 +108,7 @@ func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	data, err := json.Marshal(localChirp)
 	if err != nil {
 		w.WriteHeader(500)
-		fmt.Fprintf(w, "Error unmarshaling chirp: %d\n", err.Error())
+		fmt.Fprintf(w, "Error unmarshaling chirp: %s\n", err.Error())
 		return
 	}
 	w.Header().Add("content-type", "application/json")
@@ -225,6 +225,24 @@ func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
+func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, r *http.Request) {
+	chirps, err := cfg.Db.GetAllChirps(context.Background())
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error getting data from db: %s\n", err.Error())
+		return
+	}
+	data, err := json.Marshal(chirps)
+	if err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
+		return
+	}
+	w.Header().Add("content-Type", "application/json")
+	w.WriteHeader(200)
+	w.Write(data)
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -248,6 +266,7 @@ func main() {
 	}
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
 	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
+	mux.HandleFunc("GET /api/chirps", cfg.handleGetAllChirps)
 	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
 	mux.HandleFunc("POST /admin/reset", cfg.resetApp)
