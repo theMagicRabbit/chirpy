@@ -19,7 +19,7 @@ INSERT INTO users (
     updated_at,
     email
 ) VALUES ( $1, $2, $3, $4)
-RETURNING id, created_at, updated_at, email
+RETURNING id, created_at, updated_at, email, salt, password_hash
 `
 
 type CreateUserParams struct {
@@ -42,6 +42,8 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.Salt,
+		&i.PasswordHash,
 	)
 	return i, err
 }
