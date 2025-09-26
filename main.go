@@ -15,10 +15,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
+	"github.com/theMagicRabbit/chirpy/internal/auth"
 	"github.com/theMagicRabbit/chirpy/internal/database"
 )
 
-type apiConfig struct {
+type ApiConfig struct {
 	FileserverHits atomic.Int32
 	Db *database.Queries
 	Env string
@@ -51,7 +52,7 @@ func handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
-func (cfg *apiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
+func (cfg *ApiConfig) handleChirps(w http.ResponseWriter, r *http.Request) {
 	type validateResponse struct {
 		Error string `json:"error"`
 		Valid bool   `json:"valid"`
@@ -138,7 +139,7 @@ func profanityChecker(message string) (string, bool) {
 }
 
 
-func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
+func (cfg *ApiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Add("content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(200)
 	htmlPage := `<html>
@@ -152,17 +153,23 @@ func (cfg *apiConfig) handleAppHits(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte(body))
 }
 
-func (cfg *apiConfig) middlewareNewUser() http.Handler {
+func (cfg *ApiConfig) middlewareNewUser() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		type requestBody struct {
 			Email string `json:"email"`
+			Password string `json:"password"`
 		}
-		var email requestBody
+		var userRequest requestBody
 		var userBytes []byte
 		bodyDecoder := json.NewDecoder(r.Body)
-		if err := bodyDecoder.Decode(&email); err != nil {
+		if err := bodyDecoder.Decode(&userRequest); err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "Error decoding request: %s\n", err.Error())
+			return
+		}
+		if userRequest.Password == "" {
 			w.WriteHeader(400)
-			fmt.Fprintf(w, "Error parsing json: %s\n", err.Error())
+			fmt.Fprintln(w, "Password is required")
 			return
 		}
 		id, err := uuid.NewRandom()
@@ -172,11 +179,18 @@ func (cfg *apiConfig) middlewareNewUser() http.Handler {
 			return
 		}
 		utcTimestamp := time.Now().UTC()
+		hashedPassword, err := auth.HashPassword(userRequest.Password)
+		if err != nil {
+			w.WriteHeader(500)
+			fmt.Fprintln(w, "Unable to hash password")
+			return
+		}
 		params := database.CreateUserParams {
 			ID: id,
-			Email: email.Email,
+			Email: userRequest.Email,
 			CreatedAt: utcTimestamp,
 			UpdatedAt: utcTimestamp,
+			HashedPassword: hashedPassword,
 		}
 		databaseUser, err := cfg.Db.CreateUser(context.Background(), params)
 		if err != nil {
@@ -202,14 +216,14 @@ func (cfg *apiConfig) middlewareNewUser() http.Handler {
 
 }
 
-func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
+func (cfg *ApiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.FileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
 }
 
-func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
+func (cfg *ApiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
 	if cfg.Env != "dev" {
 		w.WriteHeader(403)
 		return
@@ -225,7 +239,7 @@ func (cfg *apiConfig) resetApp(w http.ResponseWriter, _ *http.Request) {
 	w.Write([]byte("OK\n"))
 }
 
-func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, _ *http.Request) {
+func (cfg *ApiConfig) handleGetAllChirps(w http.ResponseWriter, _ *http.Request) {
 	chirps, err := cfg.Db.GetAllChirps(context.Background())
 	if err != nil {
 		w.WriteHeader(500)
@@ -243,7 +257,7 @@ func (cfg *apiConfig) handleGetAllChirps(w http.ResponseWriter, _ *http.Request)
 	w.Write(data)
 }
 
-func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
+func (cfg *ApiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request) {
 	idString := r.PathValue("chirpID")
 	chirpID, err := uuid.Parse(idString)
 	if err != nil {
@@ -268,6 +282,48 @@ func (cfg *apiConfig) handleGetChirpByID(w http.ResponseWriter, r *http.Request)
 	w.Write(data)
 }
 
+func (cfg *ApiConfig) handleLogin(w http.ResponseWriter, r *http.Request) {
+	type userRequest struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	userDecoder := json.NewDecoder(r.Body)
+	defer r.Body.Close()
+
+	userBody := userRequest{}
+	if err := userDecoder.Decode(&userBody); err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "Error marshaling json: %s\n", err.Error())
+		return
+	}
+	user := User{}
+	if localUser, err := cfg.Db.GetUserByEmail(context.Background(), userBody.Email); err != nil {
+		w.WriteHeader(401)
+		return
+	} else {
+		if match, err2 := auth.CheckPasswordHash(userBody.Password, localUser.HashedPassword); err2 != nil {
+			w.WriteHeader(500)
+			fmt.Fprintf(w, "cannot validate password: %s\n", err2.Error())
+			return
+		} else if !match {
+			w.WriteHeader(401)
+			return
+		}
+		user.ID = localUser.ID
+		user.Email = localUser.Email
+		user.CreatedAt = localUser.CreatedAt
+		user.UpdatedAt = localUser.UpdatedAt
+	}
+	if data, err := json.Marshal(user); err != nil {
+		w.WriteHeader(500)
+		fmt.Fprintf(w, "cannot marshal json: %s\n", err.Error())
+		return
+	} else {
+	 	w.WriteHeader(200)
+	 	w.Write(data)
+	}
+}
+
 func main() {
 	godotenv.Load()
 	dbURL := os.Getenv("DB_URL")
@@ -278,7 +334,7 @@ func main() {
 		os.Exit(1)
 	}
 	dbQueries := database.New(db)
-	cfg := apiConfig {
+	cfg := ApiConfig {
 		Db: dbQueries,
 		Env: platformEnv,
 	}
@@ -292,6 +348,7 @@ func main() {
 	mux.HandleFunc("GET /api/healthz", handleHealthz)
 	mux.HandleFunc("POST /api/chirps", cfg.handleChirps)
 	mux.HandleFunc("GET /api/chirps", cfg.handleGetAllChirps)
+	mux.HandleFunc("POST /api/login", cfg.handleLogin)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", cfg.handleGetChirpByID)
 	mux.Handle("POST /api/users", cfg.middlewareNewUser())
 	mux.HandleFunc("GET /admin/metrics", cfg.handleAppHits)
